@@ -53,8 +53,15 @@ func startLongRun(t *testing.T) (*exec.Cmd, *bytes.Buffer) {
 // hasChild reports whether a process has a child process.
 func hasChild(pid int) bool {
 	if runtime.GOOS == "linux" {
-		data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/task/" + strconv.Itoa(pid) + "/children")
-		return err == nil && len(bytes.TrimSpace(data)) > 0
+		// A task's children file lists only the children that thread forked, and Go starts Typst from whichever
+		// thread runs the goroutine, rarely the main one: so look at every thread's.
+		files, _ := filepath.Glob("/proc/" + strconv.Itoa(pid) + "/task/*/children")
+		for _, f := range files {
+			if data, err := os.ReadFile(f); err == nil && len(bytes.TrimSpace(data)) > 0 {
+				return true
+			}
+		}
+		return false
 	}
 	return exec.Command("pgrep", "-P", strconv.Itoa(pid)).Run() == nil
 }
