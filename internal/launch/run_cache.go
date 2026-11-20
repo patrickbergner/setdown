@@ -28,6 +28,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/patrickbergner/setdown/internal/payload"
@@ -226,6 +227,30 @@ func moveAside(root, dir string) (string, error) {
 	return aside, os.Rename(dir, aside)
 }
 
+// retryBusy runs f until it succeeds, fails for good or about two seconds have passed. Right after a run, Windows can
+// refuse to rename or delete its files for a moment: typst.exe is still exiting, or a virus scanner has them open
+// (CI's --clean-cache after rendering the examples failed so once, 2026-11-20). Go's cmd/go retries the same errors.
+func retryBusy(f func() error) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for wait := 10 * time.Millisecond; ; wait *= 2 {
+		err := f()
+		if err == nil || !busy(err) || time.Now().Add(wait).After(deadline) {
+			return err
+		}
+		time.Sleep(wait)
+	}
+}
+
+// busy reports whether err is one Windows gives for a file that another process has open for a moment.
+func busy(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	var errno syscall.Errno
+	// ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION.
+	return errors.As(err, &errno) && (errno == 5 || errno == 32 || errno == 33)
+}
+
 // CleanCache removes setdown's directories from the cache, and the cache directory if nothing else is left in it.
 func CleanCache(notef func(format string, args ...any)) error {
 	root, err := cacheRoot()
@@ -241,24 +266,33 @@ func CleanCache(notef func(format string, args ...any)) error {
 		return err
 	}
 	var failed []string
+	var cause error
 	for _, e := range entries {
 		name := e.Name()
 		if !e.IsDir() || !(strings.HasPrefix(name, tmpPrefix) || versionDir.MatchString(name)) {
 			continue
 		}
 		dir := filepath.Join(root, name)
-		if !strings.HasPrefix(name, tmpPrefix) {
-			if dir, err = moveAside(root, dir); err != nil {
-				failed = append(failed, name)
-				continue
+		err := retryBusy(func() error {
+			if !strings.HasPrefix(filepath.Base(dir), tmpPrefix) {
+				aside, err := moveAside(root, dir)
+				if err != nil {
+					return err
+				}
+				dir = aside
 			}
-		}
-		if err := os.RemoveAll(dir); err != nil {
+			return os.RemoveAll(dir)
+		})
+		if err != nil {
 			failed = append(failed, name)
+			if cause == nil {
+				cause = err
+			}
 		}
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("could not remove %s from %s; is setdown running?", strings.Join(failed, ", "), root)
+		return fmt.Errorf("could not remove %s from %s; is setdown running? (%v)", strings.Join(failed, ", "), root,
+			cause)
 	}
 	if err := os.Remove(root); err != nil {
 		notef("removed setdown's files from %s, which holds other files and stays", root)
