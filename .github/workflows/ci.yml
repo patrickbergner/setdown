@@ -1,0 +1,222 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Each platform runs on a runner of its own architecture: the tests run the embedded Typst for real, and the
+    # platforms differ in how setdown starts it (from memory on Linux, from a cache on Windows and macOS).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, target: linux/amd64, name: linux-amd64 }
+          - { runner: ubuntu-24.04-arm, target: linux/arm64, name: linux-arm64 }
+          - { runner: windows-latest, target: windows/amd64, name: windows-amd64.exe }
+          - { runner: windows-11-arm, target: windows/arm64, name: windows-arm64.exe }
+          - { runner: macos-latest, target: darwin/arm64, name: macos-arm64 }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    # No user defaults, as on a runner anyway: the examples show setdown's own (the tests set these themselves).
+    env:
+      SETDOWN_CONFIG: ""
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Nothing is unpacked that does not hash to the value pinned in tools/versions.json, so a poisoned cache fails
+      # the fetch, and bumping a pin changes the key.
+      - uses: actions/cache@v6
+        with:
+          path: tools/download-cache
+          key: downloads-${{ matrix.target }}-${{ hashFiles('tools/versions.json') }}
+
+      # gofmt, the fetch for this platform, go vet and go test: the script a maintainer runs. The tests convert
+      # the overview example with every option, and every example as it is, and check what a reader would notice
+      # (pages, paper, fonts, missing glyphs, text size, margin, color), not bytes, which may differ between platforms
+      # without anything being wrong.
+      - name: Test
+        run: ./run-tests.sh -v
+
+      - name: Build
+        run: ./build.sh ${{ matrix.target }}
+
+      # The built binary, with its version stamp, rather than the test binary; with the options in an example's
+      # options.txt, run from the example's directory, as render-examples.sh does.
+      - name: Render the examples
+        run: |
+          mkdir -p out
+          b=$PWD/setdown-${{ matrix.name }}
+          $b --version
+          for md in examples/[0-9][0-9]-*/*.md; do
+            dir=$(dirname "$md"); name=$(basename "${md%.md}")
+            opts=()
+            if [ -f "$dir/options.txt" ]; then read -r -a opts < "$dir/options.txt"; fi
+            (cd "$dir" && $b "${opts[@]}" "$name.md" "$OLDPWD/out/$name.pdf")
+          done
+
+      # veraPDF, the reference validator, checks what pdfpack makes of Typst's PDF/A-3b and PDF/UA-1 files: every
+      # example at a3b, and at ua1 all but those Typst refuses (03 has no title and starts at ##, 08 an image without
+      # alternative text) and the e-invoice (16), which is PDF/A-3b only. The output depends on neither platform nor
+      # architecture, so one runner suffices. The installer is pinned by version and SHA-256; the runner image brings
+      # Java.
+      - name: Validate PDF/A-3b and PDF/UA-1 with veraPDF (Linux x86-64)
+        if: matrix.name == 'linux-amd64'
+        env:
+          VERAPDF_URL: https://software.verapdf.org/rel/1.30/verapdf-greenfield-1.30.4-installer.zip
+          VERAPDF_SHA256: 04415ef3f149526a3048b9889723e81320ddf013bd891bcc7f0f297f3eadcc23
+        run: |
+          java -version
+          curl -sSfL -o verapdf.zip "$VERAPDF_URL"
+          echo "$VERAPDF_SHA256  verapdf.zip" | sha256sum -c
+          unzip -q verapdf.zip -d verapdf-installer
+          cat > auto-install.xml <<EOF
+          <?xml version="1.0" encoding="UTF-8" standalone="no"?>
+          <AutomatedInstallation langpack="eng">
+            <com.izforge.izpack.panels.htmlhello.HTMLHelloPanel id="welcome"/>
+            <com.izforge.izpack.panels.target.TargetPanel id="install_dir"><installpath>$PWD/verapdf</installpath></com.izforge.izpack.panels.target.TargetPanel>
+            <com.izforge.izpack.panels.packs.PacksPanel id="sdk_pack_select">
+              <pack index="0" name="veraPDF GUI" selected="true"/>
+              <pack index="1" name="veraPDF Batch files" selected="true"/>
+              <pack index="2" name="veraPDF Validation model" selected="true"/>
+              <pack index="3" name="veraPDF Documentation" selected="false"/>
+              <pack index="4" name="veraPDF Sample Plugins" selected="false"/>
+            </com.izforge.izpack.panels.packs.PacksPanel>
+            <com.izforge.izpack.panels.install.InstallPanel id="install"/>
+            <com.izforge.izpack.panels.finish.FinishPanel id="finish"/>
+          </AutomatedInstallation>
+          EOF
+          java -jar verapdf-installer/*/verapdf-izpack-installer-*.jar auto-install.xml
+          mkdir -p out/a3b out/ua1
+          b=$PWD/setdown-${{ matrix.name }}
+          for md in examples/[0-9][0-9]-*/*.md; do
+            dir=$(dirname "$md"); name=$(basename "${md%.md}")
+            opts=()
+            if [ -f "$dir/options.txt" ]; then read -r -a opts < "$dir/options.txt"; fi
+            # A later --pdf-level wins over one from options.txt.
+            (cd "$dir" && $b "${opts[@]}" --pdf-level a3b "$name.md" "$OLDPWD/out/a3b/$name.pdf")
+            case $dir in */03-*|*/08-*|*/16-*) continue ;; esac
+            (cd "$dir" && $b "${opts[@]}" --pdf-level ua1 "$name.md" "$OLDPWD/out/ua1/$name.pdf")
+          done
+          verapdf/verapdf --flavour 3b --format text out/a3b/*.pdf | tee a3b.txt
+          verapdf/verapdf --flavour ua1 --format text out/ua1/*.pdf | tee ua1.txt
+          # One PASS line per file, nothing else.
+          test "$(grep -c '^PASS ' a3b.txt)" -eq "$(ls out/a3b/*.pdf | wc -l)"
+          test "$(grep -c '^PASS ' ua1.txt)" -eq "$(ls out/ua1/*.pdf | wc -l)"
+          if grep -v '^PASS ' a3b.txt ua1.txt; then exit 1; fi
+
+      # Mustang, the reference validator for ZUGFeRD and Factur-X, checks an e-invoice in each profile setdown supports:
+      # PDF/A-3b (with the veraPDF it embeds), the Factur-X metadata in the XMP, and the XML against its schema and
+      # business rules. The samples in cmd/setdown/testdata/e-invoice are one invoice, the one example 16's pages show.
+      # The jar is pinned by version and SHA-256.
+      - name: Validate the e-invoices with Mustang (Linux x86-64)
+        if: matrix.name == 'linux-amd64'
+        env:
+          MUSTANG_URL: https://github.com/ZUGFeRD/mustangproject/releases/download/core-2.26.0/Mustang-CLI-2.26.0.jar
+          MUSTANG_SHA256: 42d7868cb68264874a7b8cab4c3587b03b23ccc7cd72373da917f66758bb9736
+        run: |
+          curl -sSfL -o mustang.jar "$MUSTANG_URL"
+          echo "$MUSTANG_SHA256  mustang.jar" | sha256sum -c
+          mkdir -p out/e-invoice
+          b=$PWD/setdown-${{ matrix.name }}
+          for xml in cmd/setdown/testdata/e-invoice/*.xml; do
+            name=$(basename "${xml%.xml}")
+            pdf=out/e-invoice/$name.pdf log=out/e-invoice/$name.txt
+            (cd examples/16-pdf-a3b && $b --invoice "$OLDPWD/$xml" pdf-a3b.md "$OLDPWD/$pdf")
+            # The report's last summary is the verdict on the whole file.
+            if ! java -jar mustang.jar --action validate --source "$pdf" --no-notices --disable-file-logging > "$log" 2>&1 ||
+              ! grep -q '^  <summary status="valid"/>' "$log"; then
+              cat "$log"; echo "Mustang: $name is not a valid e-invoice"; exit 1
+            fi
+            echo "Mustang: $name is valid"
+          done
+
+      - name: Without exec in TMPDIR and with vm.memfd_noexec (Linux)
+        if: runner.os == 'Linux'
+        env:
+          XDG_RUNTIME_DIR: ""
+        run: |
+          b=./setdown-${{ matrix.name }}
+          sudo mkdir -p /mnt/noexec
+          sudo mount -t tmpfs -o noexec,mode=1777 tmpfs /mnt/noexec
+          # The fonts and cmarker are data files, so a noexec TMPDIR does not matter while Typst runs from memory.
+          example=examples/01-overview/overview.md
+          TMPDIR=/mnt/noexec $b $example out/noexec.pdf
+          # A run killed with SIGKILL leaves its directory behind, and --clean-cache removes it.
+          python3 -c "print(('Lorem ipsum dolor sit amet, consectetur adipiscing elit. ' * 12 + '\n\n') * 6000)" > long.md
+          TMPDIR=/mnt/noexec $b long.md & pid=$!
+          sleep 1; kill -KILL $pid; sleep 6
+          ls -d /mnt/noexec/setdown-*
+          TMPDIR=/mnt/noexec $b --clean-cache
+          test -z "$(ls -A /mnt/noexec)"
+          # memfd_noexec=1: memfd_create with MFD_EXEC still runs Typst from memory.
+          sudo sysctl -w vm.memfd_noexec=1
+          $b $example out/memfd1.pdf
+          # memfd_noexec=2: no executable memfd, so Typst runs from the private directory instead...
+          sudo sysctl -w vm.memfd_noexec=2
+          $b $example out/memfd2.pdf
+          # ...and when that directory is noexec as well, setdown says what to do and leaves nothing behind.
+          if TMPDIR=/mnt/noexec $b $example out/fail.pdf 2> err.txt; then echo "expected a failure"; exit 1; fi
+          cat err.txt
+          grep -q 'point TMPDIR to a directory that allows running programs' err.txt
+          test -z "$(ls -A /mnt/noexec)"
+
+      - name: Signatures and quarantine (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          codesign -dv ./setdown-${{ matrix.name }}
+          dir=$(echo ~/Library/Caches/setdown/"$(tr -d '[:space:]' < VERSION)"-*)
+          codesign -dv "$dir/typst"
+          if xattr -p com.apple.quarantine "$dir/typst" 2>/dev/null; then echo "the unpacked Typst is quarantined"; exit 1; fi
+
+      - name: Clean the cache (Windows, macOS)
+        if: runner.os != 'Linux'
+        run: |
+          ./setdown-${{ matrix.name }} --clean-cache
+          ./setdown-${{ matrix.name }} --clean-cache 2>&1 | grep 'nothing to clean'
+
+  package:
+    # Packaging is where a rename silently breaks a release, so it runs on every push rather than for the first time
+    # on a tag. Cross-compiling all five targets on Linux also proves that they build there.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/cache@v6
+        with:
+          path: tools/download-cache
+          key: downloads-all-${{ hashFiles('tools/versions.json') }}
+
+      - name: Build
+        run: ./build.sh
+
+      - name: Package
+        run: ./dist/package.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: setdown-${{ github.sha }}
+          path: |
+            dist/setdown-*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0 # the payload is already-compressed archives
+          retention-days: 7

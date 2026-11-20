@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="440" height="170" viewBox="0 0 440 170"
+     font-family="'Source Sans 3'" font-size="13" fill="#1a1a1a">
+  <text x="0" y="16" font-weight="600">Size of the overview example, in KB</text>
+  <g transform="translate(0 34)">
+    <text x="0" y="17">Typst on its own</text>
+    <rect x="130" y="4" width="212" height="18" fill="#9a9a9a"/>
+    <text x="350" y="17">42</text>
+    <text x="0" y="49">--pdf-level a3b</text>
+    <rect x="130" y="36" width="160" height="18" fill="#1849a8"/>
+    <text x="298" y="49">32</text>
+    <text x="0" y="81">--pdf-level ua1</text>
+    <rect x="130" y="68" width="143" height="18" fill="#1849a8"/>
+    <text x="281" y="81">29</text>
+    <text x="0" y="113">default</text>
+    <rect x="130" y="100" width="123" height="18" fill="#1d6b1d"/>
+    <text x="261" y="113">25</text>
+  </g>
+</svg>

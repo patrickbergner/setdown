@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh release create
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Resolve version
+        id: version
+        run: |
+          version="$(tr -d '[:space:]' <VERSION)"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+(\.[0-9]+){0,3}$'; then
+            echo "error: VERSION holds '$version', expected 1-4 dot-separated numbers" >&2
+            exit 1
+          fi
+          # build.sh stamps VERSION into the binary with -X main.version, and
+          # `setdown --version` prints it, so a tag that disagreed would publish a
+          # binary contradicting the release it is published under. Fail before
+          # anything is built.
+          if [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "error: tag $GITHUB_REF_NAME does not match VERSION (expected v$version)" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "Version: $version"
+
+      # The release re-proves everything rather than trusting that CI passed on
+      # the same commit. The downloads are not cached here: a release fetches
+      # from upstream and checks every file against tools/versions.json.
+      - name: Test
+        run: ./run-tests.sh
+
+      - name: Build
+        run: ./build.sh
+
+      # The ldflags stamp is the one thing no test covers. Only the linux/amd64
+      # binary can be run here.
+      - name: Verify the stamp
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          reported="$(./setdown-linux-amd64 --version | head -n1)"
+          if [ "$reported" != "setdown $VERSION (linux/amd64)" ]; then
+            echo "error: the binary reports '$reported', expected 'setdown $VERSION (linux/amd64)'" >&2
+            exit 1
+          fi
+          ./setdown-linux-amd64 examples/01-overview/overview.md /tmp/overview.pdf
+
+      # One zip per platform holding setdown-<version>/ with the binary under
+      # its plain name, LICENSE and its system's readme; package.sh checks each
+      # archive's layout and writes dist/SHA256SUMS.txt.
+      - name: Package
+        run: ./dist/package.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: setdown-${{ steps.version.outputs.version }}
+          path: |
+            dist/setdown-*.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0 # the payload is already-compressed archives
+
+      # Gated on the tag, so a workflow_dispatch run is a full rehearsal –
+      # test, build, artifacts – that publishes nothing.
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          archives=(dist/setdown-"$VERSION"-*.zip)
+          if [ "${#archives[@]}" -ne 5 ]; then
+            echo "error: expected 5 archives in dist/, found ${#archives[@]}" >&2
+            printf '  %s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" "${archives[@]}" dist/SHA256SUMS.txt \
+            --title "setdown $VERSION" --generate-notes

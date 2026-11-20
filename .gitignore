@@ -1,0 +1,12 @@
+# Built binaries
+/setdown-*
+
+# Release packages. dist/package.sh and dist/readme-*.txt are sources and stay;
+# stage/ is where package.sh assembles each one, and a failed run leaves it.
+/dist/setdown-*
+/dist/SHA256SUMS.txt
+/dist/stage/
+
+# What tools/fetch downloads and unpacks
+/internal/payload/assets/
+/tools/download-cache/

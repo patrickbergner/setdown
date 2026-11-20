@@ -1,0 +1,5 @@
+* text=auto eol=lf
+# git guesses binary for a PDF on check-in by its content, but diff takes the examples' PDFs for text (no NUL in
+# their first 8000 bytes): say it outright, so that no PDF or image is ever normalized or diffed as text.
+*.pdf binary
+*.png binary

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="112" viewBox="0 0 480 112">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1a1a1a"/>
+    </marker>
+  </defs>
+  <g font-family="'Source Sans 3'" font-size="15" text-anchor="middle" fill="#1a1a1a">
+    <rect x="4" y="30" width="92" height="52" rx="6" fill="#f6f6f6" stroke="#1a1a1a" stroke-width="1.2"/>
+    <text x="50" y="61">Markdown</text>
+    <rect x="132" y="30" width="92" height="52" rx="6" fill="#f6f6f6" stroke="#1849a8" stroke-width="1.2"/>
+    <text x="178" y="61" fill="#1849a8">cmarker</text>
+    <rect x="260" y="30" width="92" height="52" rx="6" fill="#f6f6f6" stroke="#a3155f" stroke-width="1.2"/>
+    <text x="306" y="61" fill="#a3155f">Typst</text>
+    <rect x="388" y="30" width="88" height="52" rx="6" fill="#1a1a1a"/>
+    <text x="432" y="61" fill="#ffffff" font-weight="600">PDF</text>
+  </g>
+  <g stroke="#1a1a1a" stroke-width="1.5" marker-end="url(#arrow)">
+    <line x1="98" y1="56" x2="129" y2="56"/>
+    <line x1="226" y1="56" x2="257" y2="56"/>
+    <line x1="354" y1="56" x2="385" y2="56"/>
+  </g>
+  <g font-family="'Source Sans 3'" font-size="11" text-anchor="middle" fill="#646464">
+    <text x="114" y="20">read</text>
+    <text x="242" y="20">template</text>
+    <text x="370" y="20">compile</text>
+    <text x="242" y="104">all inside setdown</text>
+  </g>
+</svg>
