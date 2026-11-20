@@ -183,6 +183,7 @@ func main() {
 	flag.Var(&only, "target", "fetch only what the binary for `os/arch` embeds (repeatable)")
 	bump := flag.Bool("bump", false, "pin the latest releases of Typst, the fonts and cmarker, then stop")
 	signed := flag.String("check-signature", "", "check that the macOS binary `file` carries a code signature, then stop")
+	goLicense := flag.String("go-license", "", "take Go's license from `file` instead of $GOROOT/LICENSE")
 	flag.Parse()
 	if flag.NArg() > 0 {
 		log.Fatalf("unexpected argument %q (see -h)", flag.Arg(0))
@@ -208,7 +209,7 @@ func main() {
 		if len(only) == 0 {
 			only = targets
 		}
-		err = runFetch(root, only)
+		err = runFetch(root, only, *goLicense)
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -263,7 +264,7 @@ func writeVersions(root string, v *versions) error {
 // runFetch fills the assets for the selected targets. Typst for other targets stays when it was unpacked from the
 // pinned release, so building for one platform does not take the assets of another away; everything else is
 // unpacked anew, which takes a second.
-func runFetch(root string, selected []target) error {
+func runFetch(root string, selected []target, goLicenseFile string) error {
 	v, err := readVersions(root)
 	if err != nil {
 		return err
@@ -388,7 +389,7 @@ func runFetch(root string, selected []target) error {
 
 	// Go's standard library and the modules compiled into setdown, whose BSD and Apache licenses ask for their notices
 	// to travel with the binary as well.
-	goFiles, err := goLicenses(root)
+	goFiles, err := goLicenses(root, goLicenseFile)
 	if err != nil {
 		return err
 	}
@@ -718,12 +719,23 @@ type goLicense struct {
 
 // goLicenses lists the license and notice files of Go's standard library and of every module that setdown's command
 // imports on any target. go list reads the module cache, so the modules must have been downloaded (go mod download).
-func goLicenses(root string) ([]goLicense, error) {
-	goroot, err := goOutput(root, nil, "env", "GOROOT")
-	if err != nil {
-		return nil, err
+// Go's own license is goLicenseFile if given, else $GOROOT/LICENSE.
+func goLicenses(root, goLicenseFile string) ([]goLicense, error) {
+	if goLicenseFile == "" {
+		goroot, err := goOutput(root, nil, "env", "GOROOT")
+		if err != nil {
+			return nil, err
+		}
+		goLicenseFile = filepath.Join(goroot, "LICENSE")
+		// Distribution packages may install the license elsewhere: Arch's go, for one, as
+		// /usr/share/licenses/go/LICENSE.
+		if _, err := os.Stat(goLicenseFile); err != nil {
+			return nil, fmt.Errorf("Go's license is not at %s; give its path with -go-license", goLicenseFile)
+		}
+	} else if _, err := os.Stat(goLicenseFile); err != nil {
+		return nil, fmt.Errorf("-go-license: %w", err)
 	}
-	out := []goLicense{{"Go, LICENSE", "go-LICENSE", filepath.Join(goroot, "LICENSE")}}
+	out := []goLicense{{"Go, LICENSE", "go-LICENSE", goLicenseFile}}
 	modules := map[string]string{} // path@version: directory
 	for _, t := range targets {
 		list, err := goOutput(root, []string{"GOOS=" + t.goos, "GOARCH=" + t.goarch, "CGO_ENABLED=0"}, "list", "-e",
